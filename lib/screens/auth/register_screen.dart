@@ -117,26 +117,26 @@ class _RegisterScreenState extends State<RegisterScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const _Label('Full name'),
+              const _Label('Enter Your Full Name'),
               TextFormField(
                 controller: _nameController,
                 textCapitalization: TextCapitalization.words,
                 textInputAction: TextInputAction.next,
                 decoration: const InputDecoration(
-                  hintText: 'Jordan Ellis',
+                  hintText: 'Enter Your Name',
                   prefixIcon: Icon(Icons.person_rounded, size: 20),
                 ),
                 validator: Validators.fullName,
               ),
               Gap.h16,
-              const _Label('Email address'),
+              const _Label('Email Address '),
               TextFormField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
                 textInputAction: TextInputAction.next,
                 autocorrect: false,
                 decoration: const InputDecoration(
-                  hintText: 'you@example.com',
+                  hintText: 'Enter Your Email',
                   prefixIcon: Icon(Icons.alternate_email_rounded, size: 20),
                 ),
                 validator: Validators.email,
@@ -148,12 +148,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 keyboardType: TextInputType.phone,
                 textInputAction: TextInputAction.next,
                 decoration: const InputDecoration(
-                  hintText: '98765 43210',
+                  hintText: 'Enter Your Number',
                   prefixText: '+91  ',
                   prefixIcon: Icon(Icons.phone_rounded, size: 20),
                 ),
                 validator: Validators.phone,
-                maxLength: 14,
+                maxLength: 10,
               ),
               Gap.h16,
               const _Label('Password'),

@@ -116,7 +116,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 textInputAction: TextInputAction.next,
                 autocorrect: false,
                 decoration: const InputDecoration(
-                  hintText: 'you@example.com or 9876543210',
+                  hintText: 'Email or Phone',
                   prefixIcon: Icon(Icons.alternate_email_rounded, size: 20),
                 ),
                 validator: Validators.emailOrPhone,
@@ -218,14 +218,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 onTap: isLoading ? null : () => _socialLogin(),
               ),
             ),
-            Gap.w12,
-            Expanded(
-              child: _SocialButton(
-                label: 'Apple',
-                icon: Icons.apple_rounded,
-                onTap: isLoading ? null : () => _socialLogin(),
-              ),
-            ),
+           
           ],
         ),
         Gap.h24,
