@@ -43,3 +43,22 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Web / legacy build artifacts
+.dart_tool/
+.packages
+*.dart.js
+*.info.json
+*.js
+*.js_
+*.js.deps
+*.js.map
+.flutter-plugins
+
+# pubspec.lock is intentionally committed: this is an application, not a
+# package, so reproducible builds need the resolved dependency versions.
