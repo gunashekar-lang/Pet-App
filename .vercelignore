@@ -1,0 +1,26 @@
+# Local Flutter/Dart build artifacts - the Vercel build creates its own
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+*.iml
+
+# Native platform dirs are not needed for `flutter build web`
+android/
+ios/
+linux/
+macos/
+windows/
+
+# Editor + local-only folders
+.idea/
+Pictures/
+test/
+supabase/
+
+# Secrets: scripts/vercel-build.sh runs `touch .env` and injects real values
+# with --dart-define from the project's environment variables
+.env
+.env.*
+!.env.example

@@ -65,3 +65,8 @@ app.*.map.json
 
 # Stray Windows Pictures folder (screenshots, desktop.ini, shortcuts) - not app assets
 /Pictures/
+.vercel
+.env*
+
+# keep the documented example despite the .env* rule above
+!.env.example
