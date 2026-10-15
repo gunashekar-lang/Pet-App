@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+
+import '../../services/web_camera.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/routes.dart';
@@ -8,7 +10,6 @@ import '../../utils/constants.dart';
 import '../../utils/validators.dart';
 import '../../widgets/common.dart';
 import '../../widgets/custom_button.dart';
-import '../../widgets/section_header.dart';
 
 /// Edit the signed-in user's public seller profile.
 class EditProfileScreen extends StatefulWidget {
@@ -73,19 +74,32 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         child: CustomButton(
           label: 'Save changes',
           icon: Icons.check_rounded,
-          onPressed: () {
+          onPressed: () async {
             if (!(_formKey.currentState?.validate() ?? false)) return;
-            auth.updateProfile(
+
+            final saved = await auth.updateProfile(
               fullName: _nameController.text.trim(),
               phone: Validators.normalizeIndianPhone(_phoneController.text),
               city: _cityController.text.trim(),
               bio: _bioController.text.trim(),
               avatarUrl: _avatarUrl,
             );
+            if (!context.mounted) return;
             Nav.pop(context);
-            ScaffoldMessenger.of(context)
+
+            final messenger = ScaffoldMessenger.of(context);
+            messenger
               ..hideCurrentSnackBar()
-              ..showSnackBar(const SnackBar(content: Text('Profile updated')));
+              ..showSnackBar(
+                SnackBar(
+                  content: Text(
+                    saved
+                        ? 'Profile updated'
+                        : 'Saved on this device only - the server rejected it',
+                  ),
+                  duration: const Duration(seconds: 8),
+                ),
+              );
           },
         ),
       ),
@@ -162,15 +176,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 alignLabelWithHint: true,
                 hintText: 'Tell buyers a little about yourself and your pets',
               ),
-            ),
-            Gap.h8,
-            const InfoBanner(
-              icon: Icons.visibility_outlined,
-              title: 'Buyers see this',
-              message:
-                  'Your name, city and bio appear on every listing you '
-                  'create, so keep it friendly and honest.',
-              color: AppColors.accent,
             ),
             Gap.h24,
             const Text(
@@ -281,13 +286,42 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       return;
     }
 
-    final picked = await ImagePicker().pickImage(
-      source: choice.source!,
-      maxWidth: 1024,
-      imageQuality: 85,
-    );
-    if (picked == null || !mounted) return;
-    setState(() => _avatarUrl = picked.path);
+    try {
+      String? path;
+      if (choice.source == ImageSource.camera) {
+        // On web the browser camera (getUserMedia) opens an in-app capture
+        // sheet; fall back to image_picker when no camera is available.
+        final bytes = await captureWebCameraImage(context: context);
+        path = bytes != null ? bytesToJpegDataUri(bytes) : null;
+        if (path == null) {
+          final picked = await ImagePicker().pickImage(
+            source: choice.source!,
+            maxWidth: 1024,
+            imageQuality: 85,
+          );
+          path = picked?.path;
+        }
+      } else {
+        final picked = await ImagePicker().pickImage(
+          source: choice.source!,
+          maxWidth: 1024,
+          imageQuality: 85,
+        );
+        path = picked?.path;
+      }
+      if (path == null || !mounted) return;
+      setState(() => _avatarUrl = path!);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Could not open the camera or gallery on this '
+                'device.'),
+          ),
+        );
+    }
   }
 }
 

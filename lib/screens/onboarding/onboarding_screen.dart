@@ -64,7 +64,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     HapticFeedback.mediumImpact();
     await context.read<AuthService>().completeOnboarding();
     if (!mounted) return;
-    await Nav.replace(context, AppRoutes.login);
+    await Nav.resetTo(context, AppRoutes.login);
   }
 
   @override

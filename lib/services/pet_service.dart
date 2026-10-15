@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/pet_model.dart';
 import '../models/user_model.dart';
 import '../utils/constants.dart';
+import 'pet_repository.dart';
+import 'supabase_config.dart';
 
 /// Sort options for marketplace results.
 enum PetSort { newest, priceLowHigh, priceHighLow, popular }
@@ -95,6 +97,17 @@ class PetService extends ChangeNotifier {
   final List<PetInquiry> _inquiries = [];
   final List<PetPurchase> _purchases = [];
 
+  /// Ownership identity used to decide what is "mine".
+  ///
+  /// `'me'` is the offline placeholder: without a backend there is no uuid, but
+  /// the browse grid must still hide the seller's own listings. Once Supabase is
+  /// available this becomes the real auth user id.
+  String _currentUserId = 'me';
+
+  /// True when the last write was rejected by the server, so the UI can say so
+  /// instead of claiming success.
+  bool _lastWriteSynced = true;
+
   // ---------------------------------------------------------------- getters
 
   bool get isLoading => _isLoading;
@@ -107,6 +120,31 @@ class PetService extends ChangeNotifier {
   List<PetInquiry> get inquiries => List.unmodifiable(_inquiries);
   List<PetPurchase> get purchases => List.unmodifiable(_purchases);
   Set<String> get favoriteIds => Set.unmodifiable(_favoriteIds);
+
+  /// The signed-in user's id, or `'me'` when running offline.
+  String get currentUserId => _currentUserId;
+
+  /// False when the most recent create/update/delete was not accepted by the
+  /// backend. Screens use this to warn the seller honestly.
+  bool get lastWriteSynced => _lastWriteSynced;
+
+  /// Points the service at a real user id. Called on sign-in so listings are
+  /// attributed to the right account.
+  void setCurrentUser(String userId) {
+    if (userId.isEmpty || userId == _currentUserId) return;
+    _currentUserId = userId;
+    notifyListeners();
+  }
+
+  /// Resolves ownership from the live session rather than from AuthService, so
+  /// this layer stays independent of the auth layer. Called at write time
+  /// because a fresh sign-in can happen long after the app bootstrapped.
+  void _resolveCurrentUser() {
+    final session = SupabaseConfig.client.auth.currentSession;
+    if (session != null && session.user.id != _currentUserId) {
+      _currentUserId = session.user.id;
+    }
+  }
 
   /// All pets, newest first.
   List<PetModel> get allPets =>
@@ -128,7 +166,7 @@ class PetService extends ChangeNotifier {
 
   /// Pets the current user has listed.
   List<PetModel> get myListings =>
-      _pets.where((p) => p.ownerId == 'me').toList();
+      _pets.where((p) => p.ownerId == _currentUserId).toList();
 
   List<PetModel> get favoritePets =>
       _pets.where((p) => _favoriteIds.contains(p.id)).toList();
@@ -138,7 +176,14 @@ class PetService extends ChangeNotifier {
   /// Pets matching the current query, category, filter and sort.
   List<PetModel> get results {
     final q = _query.trim().toLowerCase();
-    var list = _pets.where((p) => p.status == PetStatus.available).toList();
+    // A seller's own listings are managed from My Listings, so they never
+    // appear in the browse grid they would otherwise be competing with.
+    var list = _pets
+        .where(
+          (p) => p.status == PetStatus.available &&
+              p.ownerId != _currentUserId,
+        )
+        .toList();
 
     if (_selectedCategoryId != 'all') {
       final species = CategoriesDataBridge.speciesFor(_selectedCategoryId);
@@ -224,16 +269,39 @@ class PetService extends ChangeNotifier {
     }
     _isLoading = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.shortDelay);
+    await refresh();
     _isLoading = false;
     notifyListeners();
   }
 
-  /// Simulates a network fetch so swap-in API calls look natural in the UI.
+  /// Reloads listings from the backend.
+  ///
+  /// One query returns both browse rows and the seller's own listings: they are
+  /// the same table, and the browse grid filters the seller's own out in Dart.
+  /// Two round trips would risk the two lists disagreeing.
   Future<void> refresh() async {
     _isLoading = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.shortDelay);
+
+    if (!PetRepository.instance.isReadable) {
+      // Offline: keep whatever is already in memory.
+      _isLoading = false;
+      notifyListeners();
+      return;
+    }
+
+    // Resolve ownership from the live session rather than from AuthService, so
+    // this layer stays independent of the auth layer.
+    _resolveCurrentUser();
+
+    final remote = await PetRepository.instance.fetch(
+      excludeSellerId: _currentUserId == 'me' ? null : _currentUserId,
+    );
+
+    if (remote.isNotEmpty || _pets.isEmpty) {
+      _pets = remote;
+    }
+
     _isLoading = false;
     notifyListeners();
   }
@@ -318,7 +386,13 @@ class PetService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Registers a new listing. Returns the created pet.
+  /// Registers a new listing and returns the created pet.
+  ///
+  /// With a backend configured the row is inserted first, so the returned pet
+  /// carries the real uuid and a photo edit later hits the same row. If the
+  /// insert is rejected the in-memory copy is still returned and
+  /// [lastWriteSynced] goes false, so the screen can say the listing was not
+  /// saved rather than lying.
   Future<PetModel> createListing({
     required String name,
     required PetSpecies species,
@@ -336,10 +410,17 @@ class PetService extends ChangeNotifier {
     SellerModel? seller,
   }) async {
     _isSubmitting = true;
+    _lastWriteSynced = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.networkDelay);
 
-    final pet = PetModel(
+    // A fresh sign-in may have happened after the app bootstrapped, so resolve
+    // the real user id before attributing the listing.
+    if (PetRepository.instance.isAvailable) {
+      _resolveCurrentUser();
+    }
+
+    final draft = PetModel(
+      // Placeholder only; a successful insert replaces it with the db uuid.
       id: 'pet_${DateTime.now().millisecondsSinceEpoch}',
       name: name,
       species: species,
@@ -351,7 +432,12 @@ class PetService extends ChangeNotifier {
       imageUrls: List<String>.from(imagePaths),
       seller:
           seller ??
-          SellerModel(id: 'me', name: 'You', avatarUrl: '', location: location),
+          SellerModel(
+            id: _currentUserId,
+            name: 'You',
+            avatarUrl: '',
+            location: location,
+          ),
       description: description,
       vaccinated: vaccinations.isNotEmpty,
       healthIssues: healthIssues,
@@ -362,51 +448,80 @@ class PetService extends ChangeNotifier {
       negotiable: negotiable,
       tags: tags,
       createdAt: DateTime.now(),
-      ownerId: 'me',
+      ownerId: _currentUserId,
     );
 
-    _pets = [pet, ..._pets];
+    var pet = draft;
+
+    if (PetRepository.instance.isAvailable) {
+      final stored = await PetRepository.instance.create(draft);
+      if (stored != null) {
+        pet = stored;
+      } else {
+        // Keep the draft visible but flag that the server refused it.
+        _lastWriteSynced = false;
+      }
+    }
+
+    _pets = [pet, ..._pets.where((p) => p.id != pet.id)];
     _isSubmitting = false;
     notifyListeners();
     return pet;
   }
 
   /// Replaces the photos on an existing listing.
-  void updateListingImages(String petId, List<String> imagePaths) {
+  Future<void> updateListingImages(String petId, List<String> imagePaths) async {
     final pet = petById(petId);
     if (pet == null) return;
-    _replace(pet.copyWith(imageUrls: List<String>.from(imagePaths)));
+    final updated = pet.copyWith(imageUrls: List<String>.from(imagePaths));
+    _replace(updated);
+    notifyListeners();
+
+    _lastWriteSynced = await PetRepository.instance.update(updated);
     notifyListeners();
   }
 
   /// Replaces the vaccination history on an existing listing.
-  void updateVaccinations(String petId, List<VaccinationRecord> records) {
+  Future<void> updateVaccinations(
+    String petId,
+    List<VaccinationRecord> records,
+  ) async {
     final pet = petById(petId);
     if (pet == null) return;
-    _replace(pet.copyWith(vaccinations: List<VaccinationRecord>.from(records)));
+    final updated = pet.copyWith(
+      vaccinations: List<VaccinationRecord>.from(records),
+    );
+    _replace(updated);
+    notifyListeners();
+
+    _lastWriteSynced = await PetRepository.instance.update(updated);
     notifyListeners();
   }
 
   Future<void> deleteListing(String petId) async {
     _isSubmitting = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.shortDelay);
     _pets = _pets.where((p) => p.id != petId).toList();
     _isSubmitting = false;
     notifyListeners();
-  }
 
-  Future<void> markAsSold(String petId) async {
-    final pet = petById(petId);
-    if (pet == null) return;
-    _replace(pet.copyWith(status: PetStatus.sold));
+    _lastWriteSynced = await PetRepository.instance.delete(petId);
     notifyListeners();
   }
+
+  Future<void> markAsSold(String petId) =>
+      updateListingStatus(petId, PetStatus.sold);
 
   Future<void> updateListingStatus(String petId, PetStatus status) async {
     final pet = petById(petId);
     if (pet == null) return;
-    _replace(pet.copyWith(status: status));
+    final updated = pet.copyWith(status: status);
+    _replace(updated);
+    notifyListeners();
+
+    // Only the status column is sent: a full-row write could resurrect a field
+    // another edit changed in the meantime.
+    _lastWriteSynced = await PetRepository.instance.setStatus(petId, status);
     notifyListeners();
   }
 

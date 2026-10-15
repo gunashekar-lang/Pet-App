@@ -22,7 +22,7 @@ class PetHubApp extends StatefulWidget {
 }
 
 class _PetHubAppState extends State<PetHubApp> {
-  ThemeMode _themeMode = ThemeMode.system;
+  ThemeMode _themeMode = ThemeMode.light;
 
   @override
   void initState() {
@@ -39,7 +39,7 @@ class _PetHubAppState extends State<PetHubApp> {
       final mode = switch (saved) {
         'light' => ThemeMode.light,
         'dark' => ThemeMode.dark,
-        _ => ThemeMode.system,
+        _ => ThemeMode.light,
       };
       if (!mounted) return;
       setState(() => _themeMode = mode);
@@ -57,7 +57,6 @@ class _PetHubAppState extends State<PetHubApp> {
       /* no-op */
     }
   }
-
   /// Exposed so the profile screen can flip dark mode from settings.
   static _PetHubAppState? of(BuildContext context) =>
       context.findAncestorStateOfType<_PetHubAppState>();

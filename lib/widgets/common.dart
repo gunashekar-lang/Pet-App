@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../utils/constants.dart';
@@ -56,6 +57,18 @@ class AppImage extends StatelessWidget {
         errorBuilder: (_, _, _) => placeholder,
         loadingBuilder: (context, child, progress) =>
             progress == null ? child : placeholder,
+      );
+    }
+
+    // Web has no filesystem: a picked photo arrives as a data: URL. dart:io
+    // (and Image.file) does not exist there, so render the data URL directly.
+    if (kIsWeb) {
+      return Image.network(
+        url,
+        width: width,
+        height: height,
+        fit: fit,
+        errorBuilder: (_, _, _) => placeholder,
       );
     }
 
@@ -150,22 +163,26 @@ class AppAvatar extends StatelessWidget {
     );
 
     if (url.trim().isEmpty) return fallback;
+
+    if (url.startsWith('http') || kIsWeb) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => fallback,
+        ),
+      );
+    }
     return ClipOval(
-      child: url.startsWith('http')
-          ? Image.network(
-              url,
-              width: size,
-              height: size,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => fallback,
-            )
-          : Image.file(
-              File(url),
-              width: size,
-              height: size,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => fallback,
-            ),
+      child: Image.file(
+        File(url),
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => fallback,
+      ),
     );
   }
 }

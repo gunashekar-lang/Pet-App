@@ -135,10 +135,34 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ? 'On - using the dark theme'
                         : 'Off - using the light theme',
                     color: AppColors.accent,
-                    onTap: () => setState(() {
-                      _isDarkMode = !_isDarkMode;
-                      ThemeSwitcher.setDarkMode(context, _isDarkMode);
-                    }),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _isDarkMode ? 'Dark' : 'Light',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: scheme.onSurface.withValues(alpha: 0.6),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Switch.adaptive(
+                          value: _isDarkMode,
+                          onChanged: (value) {
+                            setState(() {
+                              _isDarkMode = value;
+                              ThemeSwitcher.setDarkMode(context, value);
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                    onTap: () {
+                      setState(() {
+                        _isDarkMode = !_isDarkMode;
+                        ThemeSwitcher.setDarkMode(context, _isDarkMode);
+                      });
+                    },
                   ),
                 ],
               ),
@@ -542,6 +566,7 @@ class _MenuTile extends StatelessWidget {
     required this.subtitle,
     required this.color,
     required this.onTap,
+    this.trailing,
   });
 
   final IconData icon;
@@ -549,6 +574,9 @@ class _MenuTile extends StatelessWidget {
   final String subtitle;
   final Color color;
   final VoidCallback onTap;
+
+  /// Overrides the default chevron for rows that end in a control.
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -579,10 +607,12 @@ class _MenuTile extends StatelessWidget {
           color: scheme.onSurface.withValues(alpha: 0.55),
         ),
       ),
-      trailing: Icon(
-        Icons.chevron_right_rounded,
-        color: scheme.onSurface.withValues(alpha: 0.35),
-      ),
+      trailing:
+          trailing ??
+          Icon(
+            Icons.chevron_right_rounded,
+            color: scheme.onSurface.withValues(alpha: 0.35),
+          ),
     );
   }
 }

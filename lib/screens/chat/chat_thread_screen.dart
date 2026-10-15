@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -31,6 +33,9 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final messaging = context.read<MessagingService>();
       messaging.markRead(widget.threadId);
+      // The inbox only carries a one-line preview; swap in the full history for
+      // live conversations.
+      unawaited(messaging.loadThreadHistory(widget.threadId));
       _lastMessageCount =
           messaging.threadById(widget.threadId)?.messages.length ?? 0;
       _scrollToBottom();

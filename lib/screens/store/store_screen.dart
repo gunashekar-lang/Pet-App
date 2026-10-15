@@ -319,7 +319,7 @@ class _StoreScreenState extends State<StoreScreen> {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (_) => const _StoreFilterSheet(),
+      builder: (_) => const StoreFilterSheet(),
     );
     if (result == true && context.mounted) {
       ScaffoldMessenger.of(context)
@@ -331,7 +331,7 @@ class _StoreScreenState extends State<StoreScreen> {
   Future<void> _openSort(BuildContext context, StoreService store) async {
     final result = await showModalBottomSheet<StoreSort>(
       context: context,
-      builder: (_) => const _StoreSortSheet(),
+      builder: (_) => const StoreSortSheet(),
     );
     if (result != null) store.setSort(result);
   }
@@ -516,8 +516,8 @@ class _PromoBanner extends StatelessWidget {
   }
 }
 
-class _StoreFilterSheet extends StatelessWidget {
-  const _StoreFilterSheet();
+class StoreFilterSheet extends StatelessWidget {
+  const StoreFilterSheet({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -677,8 +677,8 @@ class _StoreFilterSheet extends StatelessWidget {
   }
 }
 
-class _StoreSortSheet extends StatelessWidget {
-  const _StoreSortSheet();
+class StoreSortSheet extends StatelessWidget {
+  const StoreSortSheet({super.key});
 
   @override
   Widget build(BuildContext context) {

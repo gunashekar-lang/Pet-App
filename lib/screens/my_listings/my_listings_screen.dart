@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/routes.dart';
-import '../../models/chat_model.dart';
 import '../../models/pet_model.dart';
 import '../../services/messaging_service.dart';
 import '../../services/pet_service.dart';
@@ -142,7 +141,9 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
                   onEdit: () => _editListing(context, pet),
                   onMarkSold: () => _markSold(context, service, pet),
                   onDelete: () => _delete(context, service, pet),
-                  onChat: () => _openBuyerChat(context, pet),
+                  onChat: () {
+                    _openBuyerChat(context, pet);
+                  },
                 ),
               ),
             ),
@@ -152,12 +153,11 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
   }
 
   /// Seller side of the conversation: the other party is a buyer asking about
-  /// this listing.
-  void _openBuyerChat(BuildContext context, PetModel pet) {
-    final thread = context.read<MessagingService>().openThread(
-      pet: pet,
-      role: ChatRole.seller,
-    );
+  /// this listing. Resolves the live conversation when one exists.
+  Future<void> _openBuyerChat(BuildContext context, PetModel pet) async {
+    final messaging = context.read<MessagingService>();
+    final thread = await messaging.openSellerThread(pet);
+    if (!context.mounted || thread == null) return;
     Nav.push(context, AppRoutes.chatThread, ChatThreadArgs(thread.id));
   }
 

@@ -395,8 +395,6 @@ class _InfoRow extends StatelessWidget {
         product.freeShipping ? 'Free delivery' : 'Paid delivery',
         product.freeShipping ? 'On this item' : 'Calculated at checkout',
       ),
-      (Icons.autorenew_rounded, 'Easy returns', '30 day window'),
-      (Icons.verified_user_rounded, 'Authenticity', 'Verified by PetHub'),
     ];
 
     return Row(

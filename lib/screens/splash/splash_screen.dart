@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../services/auth_service.dart';
 import '../../services/healthcare_service.dart';
+import '../../services/messaging_service.dart';
 import '../../services/pet_service.dart';
 import '../../services/store_service.dart';
 import '../../utils/constants.dart';
@@ -50,15 +51,25 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _bootstrap() async {
     final auth = context.read<AuthService>();
 
-    // Prime the other services in parallel so Home is instant.
-    final futures = <Future<void>>[
-      context.read<PetService>().bootstrap(),
-      context.read<StoreService>().bootstrap(),
-      context.read<HealthcareService>().bootstrap(),
-      auth.bootstrap(),
-    ];
+    // Capture the services before the first await: using BuildContext after an
+    // async gap is unsafe, and the widget may be gone by then.
+    final pets = context.read<PetService>();
+    final store = context.read<StoreService>();
+    final healthcare = context.read<HealthcareService>();
+    final messaging = context.read<MessagingService>();
 
-    await Future.wait(futures);
+    // Auth first: it establishes the Supabase session, and the pet fetch below
+    // needs it to resolve which listings are the seller's own. Running them in
+    // parallel raced, and every fetch came back tagged as "not mine".
+    await auth.bootstrap();
+
+    // The remaining services have no dependency on each other.
+    await Future.wait([
+      pets.bootstrap(),
+      store.bootstrap(),
+      healthcare.bootstrap(),
+      messaging.bootstrap(),
+    ]);
 
     // Hold the splash briefly so the brand animation reads.
     await Future<void>.delayed(const Duration(milliseconds: 900));
@@ -71,7 +82,7 @@ class _SplashScreenState extends State<SplashScreen>
         ? AppRoutes.shell
         : AppRoutes.login;
 
-    await Nav.replace(context, route);
+    await Nav.resetTo(context, route);
   }
 
   @override

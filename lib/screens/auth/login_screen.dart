@@ -50,7 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (ok) {
       HapticFeedback.mediumImpact();
-      await Nav.replace(context, AppRoutes.shell);
+      await Nav.resetTo(context, AppRoutes.shell);
     } else if (auth.error != null) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -232,7 +232,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final ok = await auth.loginWithGoogle();
     if (!mounted || !ok) return;
     HapticFeedback.mediumImpact();
-    await Nav.replace(context, AppRoutes.shell);
+    await Nav.resetTo(context, AppRoutes.shell);
   }
 }
 

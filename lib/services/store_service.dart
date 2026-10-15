@@ -5,6 +5,8 @@ import '../models/pet_model.dart';
 import '../models/product_model.dart';
 import '../models/user_model.dart';
 import '../utils/constants.dart';
+import 'product_repository.dart';
+import 'supabase_config.dart';
 
 /// Order value at or above which delivery is free.
 const double freeShippingThreshold = 499;
@@ -41,10 +43,17 @@ class StoreService extends ChangeNotifier {
   bool _isLoading = false;
   bool _isPlacingOrder = false;
 
+  /// Whether the last server write went through. Goes false when a configured
+  /// backend rejects a publish, so the UI can say so instead of lying.
+  bool _lastWriteSynced = true;
+
+  String _currentUserId = 'me';
+
   // ---------------------------------------------------------------- getters
 
   bool get isLoading => _isLoading;
   bool get isPlacingOrder => _isPlacingOrder;
+  bool get lastWriteSynced => _lastWriteSynced;
   String get query => _query;
   ProductCategory? get category => _category;
   Set<PetSpecies> get speciesTags => _speciesTags;
@@ -93,7 +102,8 @@ class StoreService extends ChangeNotifier {
   /// Products matching the current store filters.
   List<ProductModel> get results {
     final q = _query.trim().toLowerCase();
-    var list = _products.where((p) => true).toList();
+    // A seller's own products belong in their shop, not in the buy grid.
+    var list = _products.where((p) => p.sellerId != _currentUserId).toList();
 
     if (_category != null) {
       list = list.where((p) => p.category == _category).toList();
@@ -155,7 +165,22 @@ class StoreService extends ChangeNotifier {
   int get shopProductCount =>
       _products.where((p) => p.sellerId == _currentUserId).length;
 
-  String get _currentUserId => 'me';
+  /// Points the service at a real user id on sign-in, so "my shop" and the
+  /// store grid stay scoped to the signed-in seller. Defaults to `me` offline.
+  void setCurrentUser(String userId) {
+    if (userId.isEmpty || userId == _currentUserId) return;
+    _currentUserId = userId;
+    notifyListeners();
+  }
+
+  /// Resolves ownership from the live session, mirroring [PetService]. Kept
+  /// separate from the auth layer so this service stays independently testable.
+  void _resolveCurrentUser() {
+    final session = SupabaseConfig.client.auth.currentSession;
+    if (session != null && session.user.id != _currentUserId) {
+      _currentUserId = session.user.id;
+    }
+  }
 
   void updateShop({String? name, String? tagline}) {
     if (name != null && name.trim().isNotEmpty) _shopName = name.trim();
@@ -183,6 +208,12 @@ class StoreService extends ChangeNotifier {
   List<ProductModel> get myShopProducts =>
       _products.where((p) => p.sellerId == _currentUserId).toList();
 
+  /// Publishes a product to the backend when one is configured, otherwise to
+  /// in-memory state so the offline demo keeps working.
+  ///
+  /// A rejected insert still returns the draft so the shop page has something
+  /// to show, but [lastWriteSynced] goes false so the screen can say the
+  /// product was not saved rather than lying.
   Future<ProductModel> createProductListing({
     required String name,
     required String brand,
@@ -190,14 +221,21 @@ class StoreService extends ChangeNotifier {
     required double price,
     String description = '',
     String imagePath = '',
-    int stock = 0,
+    // The seller no longer sets a quantity, so listings get a healthy default.
+    // Zero would mark the product out of stock, and the store's default filter
+    // (inStockOnly) would then hide it from the catalogue entirely.
+    int stock = 20,
     List<String> highlights = const [],
   }) async {
     _isPlacingOrder = true;
+    _lastWriteSynced = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.networkDelay);
 
-    final product = ProductModel(
+    if (ProductRepository.instance.isAvailable) {
+      _resolveCurrentUser();
+    }
+
+    final draft = ProductModel(
       id: 'prod_${DateTime.now().millisecondsSinceEpoch}',
       name: name,
       brand: brand.trim().isEmpty ? _shopName : brand.trim(),
@@ -214,7 +252,19 @@ class StoreService extends ChangeNotifier {
       shopVerified: _shopVerified,
     );
 
-    _products = [product, ..._products];
+    var product = draft;
+
+    if (ProductRepository.instance.isAvailable) {
+      final stored = await ProductRepository.instance.create(draft);
+      if (stored != null) {
+        product = stored;
+      } else {
+        // Keep the draft visible but flag that the server refused it.
+        _lastWriteSynced = false;
+      }
+    }
+
+    _products = [product, ..._products.where((p) => p.id != product.id)];
     _isPlacingOrder = false;
     notifyListeners();
     return product;
@@ -223,7 +273,10 @@ class StoreService extends ChangeNotifier {
   Future<void> deleteProduct(String productId) async {
     _isLoading = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.shortDelay);
+    final saved = await ProductRepository.instance.delete(productId);
+    if (ProductRepository.instance.isAvailable && !saved) {
+      _lastWriteSynced = false;
+    }
     _products = _products.where((p) => p.id != productId).toList();
     _cart.removeWhere((i) => i.product.id == productId);
     _isLoading = false;
@@ -235,15 +288,34 @@ class StoreService extends ChangeNotifier {
   Future<void> bootstrap() async {
     _isLoading = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.shortDelay);
+    await refresh();
     _isLoading = false;
     notifyListeners();
   }
 
+  /// Reloads the catalogue from the backend. Ownership is resolved from the
+  /// live session first, exactly like [PetService.refresh].
   Future<void> refresh() async {
     _isLoading = true;
     notifyListeners();
-    await Future<void>.delayed(AppConstants.shortDelay);
+
+    if (!ProductRepository.instance.isReadable) {
+      // Offline: keep whatever is already in memory.
+      _isLoading = false;
+      notifyListeners();
+      return;
+    }
+
+    _resolveCurrentUser();
+
+    final remote = await ProductRepository.instance.fetch(
+      excludeSellerId: _currentUserId == 'me' ? null : _currentUserId,
+    );
+
+    if (remote.isNotEmpty || _products.isEmpty) {
+      _products = remote;
+    }
+
     _isLoading = false;
     notifyListeners();
   }
@@ -370,16 +442,17 @@ class StoreService extends ChangeNotifier {
   void _decrementStock(String productId, int amount) {
     final product = productById(productId);
     if (product == null) return;
+    final newStock = (product.stock - amount).clamp(0, 1 << 30);
     _products = _products
         .map(
           (p) => p.id == productId
-              ? p.copyWith(
-                  stock: (p.stock - amount).clamp(0, 1 << 30),
-                  soldCount: p.soldCount + amount,
-                )
+              ? p.copyWith(stock: newStock, soldCount: p.soldCount + amount)
               : p,
         )
         .toList();
+    // Best-effort persistence so the server stock tracks a sale. A failure
+    // here is never worth blocking the order.
+    ProductRepository.instance.updateStock(productId, newStock);
   }
 
   /// Places an order for the current cart and clears it.

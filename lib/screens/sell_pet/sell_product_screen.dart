@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+
+import '../../services/web_camera.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/routes.dart';
 import '../../models/product_model.dart';
+import '../../services/auth_service.dart';
+import '../../services/image_storage_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/store_service.dart';
 import '../../utils/constants.dart';
@@ -26,13 +30,10 @@ class _SellProductScreenState extends State<SellProductScreen> {
   final _nameController = TextEditingController();
   final _brandController = TextEditingController();
   final _priceController = TextEditingController();
-  final _mrpController = TextEditingController();
-  final _stockController = TextEditingController();
   final _descriptionController = TextEditingController();
 
   ProductCategory _category = ProductCategory.food;
   String _imagePath = '';
-  bool _freeShipping = true;
 
   @override
   void initState() {
@@ -45,8 +46,6 @@ class _SellProductScreenState extends State<SellProductScreen> {
     _nameController.dispose();
     _brandController.dispose();
     _priceController.dispose();
-    _mrpController.dispose();
-    _stockController.dispose();
     _descriptionController.dispose();
     super.dispose();
   }
@@ -73,13 +72,42 @@ class _SellProductScreenState extends State<SellProductScreen> {
       ),
     );
     if (source == null || !mounted) return;
-    final picked = await ImagePicker().pickImage(
-      source: source,
-      maxWidth: 1600,
-      imageQuality: 85,
-    );
-    if (picked == null || !mounted) return;
-    setState(() => _imagePath = picked.path);
+    try {
+      String? path;
+      if (source == ImageSource.camera) {
+        // On web the browser camera (getUserMedia) opens an in-app capture
+        // sheet; fall back to image_picker when no camera is available.
+        final bytes = await captureWebCameraImage(context: context);
+        path = bytes != null ? bytesToJpegDataUri(bytes) : null;
+        if (path == null) {
+          final picked = await ImagePicker().pickImage(
+            source: source,
+            maxWidth: 1600,
+            imageQuality: 85,
+          );
+          path = picked?.path;
+        }
+      } else {
+        final picked = await ImagePicker().pickImage(
+          source: source,
+          maxWidth: 1600,
+          imageQuality: 85,
+        );
+        path = picked?.path;
+      }
+      if (path == null || !mounted) return;
+      setState(() => _imagePath = path!);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Could not open the camera or gallery on this '
+                'device.'),
+          ),
+        );
+    }
   }
 
   Future<void> _submit() async {
@@ -95,37 +123,24 @@ class _SellProductScreenState extends State<SellProductScreen> {
       return;
     }
 
-    final mrp = double.tryParse(_mrpController.text.trim());
-    if (mrp != null && mrp <= price) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          const SnackBar(
-            content: Text('MRP must be higher than the selling price'),
-          ),
-        );
-      return;
-    }
-
-    final stock = int.tryParse(_stockController.text.trim()) ?? 0;
-    if (stock < 0) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          const SnackBar(content: Text('Stock cannot be negative')),
-        );
-      return;
-    }
-
     final store = context.read<StoreService>();
+    final sellerId = context.read<AuthService>().user?.id ?? '';
+
+    // Upload before the listing is created so buyers receive a real URL
+    // instead of a path into this device's cache.
+    final imageUrl = await ImageStorageService.instance.uploadProductImage(
+      localPath: _imagePath,
+      userId: sellerId,
+    );
+    if (!mounted) return;
+
     final product = await store.createProductListing(
       name: _nameController.text.trim(),
       brand: _brandController.text.trim(),
       category: _category,
       price: price,
       description: _descriptionController.text.trim(),
-      imagePath: _imagePath,
-      stock: stock,
+      imagePath: imageUrl,
     );
 
     if (!mounted) return;
@@ -133,14 +148,40 @@ class _SellProductScreenState extends State<SellProductScreen> {
       petName: product.name,
       petId: product.id,
     );
-    // Land on the shop listing page so the seller sees the new product.
-    await Nav.push(context, AppRoutes.myShop);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
+
+    // Do not claim success when the insert was rejected: say what actually
+    // happened, otherwise a broken backend looks like a working one.
+    final synced = store.lastWriteSynced;
+    _resetForm();
+    // The messenger sits above the navigator, so the confirmation survives the
+    // route change and stays readable on the shop page we land on.
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text('${product.name} added to your shop')),
+        SnackBar(
+          content: Text(
+            synced
+                ? '${product.name} is now listed in your shop.'
+                : '${product.name} could not be saved to the server. It will '
+                      'be lost when you close the app.',
+          ),
+          duration: const Duration(seconds: 8),
+        ),
       );
+    if (mounted) Nav.replace(context, AppRoutes.myShop);
+  }
+
+  /// Returns the form to its initial state, keeping the seller's brand.
+  void _resetForm() {
+    _formKey.currentState?.reset();
+    _nameController.clear();
+    _priceController.clear();
+    _descriptionController.clear();
+    setState(() {
+      _imagePath = '';
+      _category = ProductCategory.food;
+    });
   }
 
   @override
@@ -275,35 +316,6 @@ class _SellProductScreenState extends State<SellProductScreen> {
               validator: (value) => Validators.positiveNumber(value),
             ),
             Gap.h12,
-            TextFormField(
-              controller: _mrpController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'MRP (optional)',
-                prefixText: '₹ ',
-                helperText: 'Shown struck through to show a discount',
-              ),
-              validator: (value) => Validators.optionalPositiveNumber(value),
-            ),
-            Gap.h12,
-            TextFormField(
-              controller: _stockController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Stock quantity',
-                hintText: '0',
-              ),
-              validator: Validators.required,
-            ),
-            Gap.h12,
-            SwitchListTile.adaptive(
-              value: _freeShipping,
-              onChanged: (value) => setState(() => _freeShipping = value),
-              title: const Text('Free delivery'),
-              subtitle: const Text('Waive the delivery charge on this item'),
-              contentPadding: EdgeInsets.zero,
-            ),
-            Gap.h16,
             TextFormField(
               controller: _descriptionController,
               minLines: 3,

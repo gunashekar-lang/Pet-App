@@ -1,6 +1,5 @@
 name: pet_super_app
-description: "Pet marketplace, listings and pet care guides."
-# The following line prevents the package from being accidentally published to
+description: "Pet marketplace, listings and pet care guides."# The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
@@ -40,7 +39,9 @@ dependencies:
   intl: ^0.20.2
   shared_preferences: ^2.3.3
   image_picker: ^1.1.2
-
+  supabase_flutter: ^2.18.0
+  flutter_dotenv: ^6.0.1
+  http: ^1.6.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -62,6 +63,14 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # flutter_dotenv reads .env through the asset bundle, so it must be declared
+  # here or it throws FileNotFoundError at runtime. This bundles the
+  # publishable key into the app, which is safe: it is protected by the RLS
+  # policies in supabase/ (see schema.sql). Never put the
+  # secret/service_role key in this file.
+  assets:
+    - .env
 
   # To add assets to your application, add an assets section, like this:
   # assets:

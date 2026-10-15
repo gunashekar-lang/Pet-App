@@ -59,10 +59,13 @@ class ChatThread {
     this.participantAvatarUrl = '',
     this.isCounterpartyTyping = false,
     this.unreadCount = 0,
+    this.sellerId = '',
+    this.backendId = '',
   });
 
   /// Stable id derived from the listing and the side of the conversation, so
-  /// the same listing never produces two threads.
+  /// the same listing never produces two threads. Backed by Supabase, this is
+  /// the conversations row's uuid instead.
   final String id;
   final String petId;
   final String petName;
@@ -78,6 +81,14 @@ class ChatThread {
   final bool isCounterpartyTyping;
   final int unreadCount;
 
+  /// The listing's seller profile id, needed to start a live conversation.
+  final String sellerId;
+
+  /// The Supabase `conversations` row id once one exists. The local [id] stays
+  /// stable so an open chat screen keeps working while the backend id is being
+  /// resolved.
+  final String backendId;
+
   /// True when the other party is a buyer chasing one of the user's listings.
   bool get counterpartyIsBuyer => role == ChatRole.seller;
 
@@ -92,17 +103,24 @@ class ChatThread {
     List<ChatMessage>? messages,
     bool? isCounterpartyTyping,
     int? unreadCount,
+    String? participantName,
+    String? participantInitials,
+    String? participantAvatarUrl,
+    String? sellerId,
+    String? backendId,
   }) => ChatThread(
     id: id,
     petId: petId,
     petName: petName,
     petImage: petImage,
-    participantName: participantName,
-    participantInitials: participantInitials,
-    participantAvatarUrl: participantAvatarUrl,
+    participantName: participantName ?? this.participantName,
+    participantInitials: participantInitials ?? this.participantInitials,
+    participantAvatarUrl: participantAvatarUrl ?? this.participantAvatarUrl,
     role: role,
     messages: messages ?? this.messages,
     isCounterpartyTyping: isCounterpartyTyping ?? this.isCounterpartyTyping,
     unreadCount: unreadCount ?? this.unreadCount,
+    sellerId: sellerId ?? this.sellerId,
+    backendId: backendId ?? this.backendId,
   );
 }

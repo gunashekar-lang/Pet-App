@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pet_super_app/app/app.dart';
+import 'package:pet_super_app/data/pet_mapper.dart';
+import 'package:pet_super_app/data/product_mapper.dart';
 import 'package:pet_super_app/models/chat_model.dart';
 import 'package:pet_super_app/models/pet_model.dart';
 import 'package:pet_super_app/models/product_model.dart';
+import 'package:pet_super_app/services/auth_service.dart';
 import 'package:pet_super_app/services/healthcare_service.dart';
 import 'package:pet_super_app/services/messaging_service.dart';
 import 'package:pet_super_app/services/notification_service.dart';
+import 'package:pet_super_app/services/pet_repository.dart';
 import 'package:pet_super_app/services/pet_service.dart';
+import 'package:pet_super_app/services/product_repository.dart';
 import 'package:pet_super_app/services/store_service.dart';
+import 'package:pet_super_app/services/supabase_config.dart';
 import 'package:pet_super_app/utils/helpers.dart';
 import 'package:pet_super_app/utils/validators.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Minimal local listing, standing in for what a real API would return.
 PetModel buildPet({
@@ -63,6 +70,11 @@ ChatThread? threadById(MessagingService service, String id) =>
     service.threadById(id);
 
 void main() {
+  // The auth tests below read and write accounts through SharedPreferences,
+  // which has no backing store under `flutter test` without this.
+  TestWidgetsFlutterBinding.ensureInitialized();
+  SharedPreferences.setMockInitialValues(<String, Object>{});
+
   group('Validators', () {
     test('email rejects malformed addresses', () {
       expect(Validators.email('not-an-email'), isNotNull);
@@ -483,6 +495,235 @@ void main() {
     });
   });
 
+  group('AuthService without a configured backend', () {
+    late AuthService auth;
+
+    setUp(() {
+      // Force the unconfigured path: a developer's real .env must not decide
+      // which branch these tests run. Each test starts with an empty local
+      // account store.
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      SupabaseConfig.debugReset();
+      SupabaseConfig.debugForceMissingCredentials = true;
+      auth = AuthService();
+    });
+
+    tearDown(() {
+      auth.dispose();
+      SupabaseConfig.debugReset();
+    });
+
+    test('bootstrap completes and reports no backend', () async {
+      await auth.bootstrap();
+      expect(auth.isInitialising, isFalse);
+      expect(auth.isBackendConfigured, isFalse);
+      expect(auth.isLoggedIn, isFalse);
+      expect(auth.user, isNull);
+    });
+
+    test('login rejects empty input before touching the network', () async {
+      await auth.bootstrap();
+      final ok = await auth.login('   ', '');
+      expect(ok, isFalse);
+      expect(auth.isLoading, isFalse);
+      expect(auth.error, contains('email or mobile number'));
+    });
+
+    test('login rejects a malformed identifier', () async {
+      await auth.bootstrap();
+      final ok = await auth.login('not-an-email', 'Password1!');
+      expect(ok, isFalse);
+      expect(auth.error, contains('valid email address'));
+    });
+
+    test('a phone identifier passes validation then looks for a local account', () async {
+      await auth.bootstrap();
+      // The phone is recognised as a phone, not rejected as a bad email. With
+      // no backend the flow stops at the local account lookup.
+      final ok = await auth.login('9876543210', 'Password1!');
+      expect(ok, isFalse);
+      expect(auth.error, isNot(contains('valid email address')));
+      expect(auth.error, contains('No local account'));
+    });
+
+    test('login without a matching local account explains what to do', () async {
+      await auth.bootstrap();
+      final ok = await auth.login('user@example.com', 'Password1!');
+      expect(ok, isFalse);
+      expect(auth.error, contains('No local account'));
+    });
+
+    test('register validates fields before contacting Supabase', () async {
+      await auth.bootstrap();
+      expect(
+        await auth.register(
+          fullName: '',
+          email: 'user@example.com',
+          phone: '9876543210',
+          password: 'Password1!',
+        ),
+        isFalse,
+      );
+      expect(auth.error, contains('full name'));
+
+      expect(
+        await auth.register(
+          fullName: 'Asha Rao',
+          email: 'bad-email',
+          phone: '9876543210',
+          password: 'Password1!',
+        ),
+        isFalse,
+      );
+      expect(auth.error, isNotNull);
+    });
+
+    test('register creates a local account and signs in', () async {
+      await auth.bootstrap();
+      final ok = await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '+91 98765 43210',
+        password: 'Password1!',
+      );
+      expect(ok, isTrue);
+      expect(auth.isLoggedIn, isTrue);
+      expect(auth.user?.fullName, 'Asha Rao');
+      // The phone is normalised, not stored with +91 or spacing.
+      expect(auth.user?.phone, '9876543210');
+      expect(auth.user?.id, startsWith('local_'));
+    });
+
+    test('a local account can sign back in after logout', () async {
+      await auth.bootstrap();
+      await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '9876543210',
+        password: 'Password1!',
+      );
+      await auth.logout();
+      expect(auth.isLoggedIn, isFalse);
+
+      final ok = await auth.login('asha@example.com', 'Password1!');
+      expect(ok, isTrue);
+      expect(auth.isLoggedIn, isTrue);
+      expect(auth.user?.fullName, 'Asha Rao');
+    });
+
+    test('a wrong password is rejected for a local account', () async {
+      await auth.bootstrap();
+      await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '9876543210',
+        password: 'Password1!',
+      );
+      await auth.logout();
+
+      final ok = await auth.login('asha@example.com', 'WrongPass1!');
+      expect(ok, isFalse);
+      expect(auth.error, contains('Incorrect password'));
+    });
+
+    test('registering the same identifier twice is refused', () async {
+      await auth.bootstrap();
+      await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '9876543210',
+        password: 'Password1!',
+      );
+      await auth.logout();
+
+      final ok = await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '9876543210',
+        password: 'Password1!',
+      );
+      expect(ok, isFalse);
+      expect(auth.error, contains('already exists'));
+    });
+
+    test('logout clears local state', () async {
+      await auth.bootstrap();
+      await auth.logout();
+      expect(auth.isLoggedIn, isFalse);
+      expect(auth.user, isNull);
+    });
+
+    test('a local session is restored after an app restart', () async {
+      await auth.bootstrap();
+      await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '9876543210',
+        password: 'Password1!',
+      );
+      expect(auth.isLoggedIn, isTrue);
+
+      // A fresh service over the same storage models the next cold start.
+      final restarted = AuthService();
+      await restarted.bootstrap();
+      expect(restarted.isLoggedIn, isTrue);
+      expect(restarted.user?.fullName, 'Asha Rao');
+      expect(restarted.user?.phone, '9876543210');
+      restarted.dispose();
+    });
+
+    test('logging out stops the session being restored', () async {
+      await auth.bootstrap();
+      await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '9876543210',
+        password: 'Password1!',
+      );
+      await auth.logout();
+
+      final restarted = AuthService();
+      await restarted.bootstrap();
+      expect(restarted.isLoggedIn, isFalse);
+      expect(restarted.user, isNull);
+      restarted.dispose();
+    });
+
+    test('a profile edit is remembered across a restart', () async {
+      await auth.bootstrap();
+      await auth.register(
+        fullName: 'Asha Rao',
+        email: 'asha@example.com',
+        phone: '9876543210',
+        password: 'Password1!',
+      );
+      auth.updateProfile(city: 'Pune', bio: 'Two rescues and a labradoodle');
+
+      final restarted = AuthService();
+      await restarted.bootstrap();
+      expect(restarted.user?.city, 'Pune');
+      expect(restarted.user?.bio, 'Two rescues and a labradoodle');
+      restarted.dispose();
+    });
+  });
+
+  group('SupabaseConfig', () {
+    tearDown(SupabaseConfig.debugReset);
+
+    test('client getter throws a clear error before initialisation', () {
+      SupabaseConfig.debugReset();
+      expect(SupabaseConfig.isInitialised, isFalse);
+      expect(() => SupabaseConfig.client, throwsStateError);
+    });
+
+    test('ensureInit returns false when no credentials exist', () async {
+      SupabaseConfig.debugReset();
+      final ok = await SupabaseConfig.ensureInit(loadEnvFile: false);
+      expect(ok, isFalse);
+      expect(SupabaseConfig.isInitialised, isFalse);
+    });
+  });
+
   group('Sell a product and shop ownership', () {
     test('a published product is owned by the seller shop', () async {
       final service = StoreService();
@@ -534,6 +775,26 @@ void main() {
       await service.deleteProduct(product.id);
       expect(service.cartItemCount, 0);
       expect(service.myShopProducts, isEmpty);
+    });
+
+    test('the browse grid hides the products the seller owns', () async {
+      final service = StoreService();
+      final before = service.results.length;
+
+      await service.createProductListing(
+        name: 'Puppy Harness',
+        brand: 'Walk',
+        category: ProductCategory.walking,
+        price: 599,
+        stock: 5,
+      );
+
+      expect(service.myShopProducts.length, 1);
+      expect(service.results.length, before);
+      expect(
+        service.results.any((p) => p.name == 'Puppy Harness'),
+        isFalse,
+      );
     });
   });
 
@@ -590,6 +851,319 @@ void main() {
 
       expect(flagged.hasHealthIssues, isTrue);
       expect(flagged.healthScore, lessThan(healthy.healthScore));
+    });
+  });
+
+  group('Own listings stay out of the buy page', () {
+    test('a pet the seller listed is browseable only in My listings', () async {
+      final service = PetService();
+      final before = service.results.length;
+
+      final pet = await service.createListing(
+        name: 'Coco',
+        species: PetSpecies.dog,
+        breed: 'Indie',
+        ageInMonths: 7,
+        gender: 'Female',
+        price: 15000,
+        description: 'Playful.',
+        location: 'Pune, MH',
+        healthIssues: 'None known',
+        negotiable: false,
+      );
+
+      expect(service.myListings.single.id, pet.id);
+      expect(service.results.length, before);
+      expect(service.results.any((p) => p.id == pet.id), isFalse);
+    });
+
+    test('searching for your own listing does not surface it', () async {
+      final service = PetService();
+      await service.createListing(
+        name: 'Coco',
+        species: PetSpecies.dog,
+        breed: 'Indie',
+        ageInMonths: 7,
+        gender: 'Female',
+        price: 15000,
+        description: 'Playful.',
+        location: 'Pune, MH',
+        healthIssues: 'None known',
+        negotiable: false,
+      );
+
+      service.setQuery('Coco');
+
+      expect(service.myListings.length, 1);
+      expect(service.results, isEmpty);
+    });
+  });
+
+  group('Pet row mapping', () {
+    PetModel sample() => PetModel(
+      id: 'pet-1',
+      name: 'Coco',
+      species: PetSpecies.cat,
+      breed: 'Tabby',
+      ageInMonths: 7,
+      age: PetAge.puppy,
+      gender: 'Female',
+      price: 12000,
+      imageUrls: const ['https://cdn.test/a.jpg', 'https://cdn.test/b.jpg'],
+      seller: const SellerModel(
+        id: 'u1',
+        name: 'Asha',
+        avatarUrl: '',
+      ),
+      description: 'Playful.',
+      vaccinated: true,
+      healthIssues: 'None known',
+      vaccinations: [
+        VaccinationRecord(
+          name: 'Rabies',
+          dateGiven: DateTime(2025, 3, 4),
+          vetName: 'Dr Rao',
+        ),
+      ],
+      location: 'Pune, MH',
+      status: PetStatus.available,
+      negotiable: true,
+      tags: const ['Cat', 'Puppy'],
+      ownerId: 'u1',
+    );
+
+    test('a model round-trips through a database row without losing fields',
+        () {
+      final row = PetMapper.toRow(sample());
+      final back = PetMapper.fromRow({
+        ...row,
+        'id': 'pet-1',
+        'created_at': '2026-01-02T03:04:05Z',
+      });
+
+      expect(back.id, 'pet-1');
+      expect(back.name, 'Coco');
+      expect(back.species, PetSpecies.cat);
+      expect(back.breed, 'Tabby');
+      expect(back.ageInMonths, 7);
+      expect(back.gender, 'Female');
+      expect(back.price, 12000);
+      expect(back.imageUrls, ['https://cdn.test/a.jpg', 'https://cdn.test/b.jpg']);
+      expect(back.description, 'Playful.');
+      expect(back.vaccinated, isTrue);
+      expect(back.healthIssues, 'None known');
+      expect(back.location, 'Pune, MH');
+      expect(back.status, PetStatus.available);
+      expect(back.negotiable, isTrue);
+      expect(back.tags, ['Cat', 'Puppy']);
+      expect(back.ownerId, 'u1');
+      expect(back.vaccinations.single.name, 'Rabies');
+      expect(back.vaccinations.single.vetName, 'Dr Rao');
+      expect(back.createdAt, DateTime.parse('2026-01-02T03:04:05Z'));
+    });
+
+    test('column names are snake_case and match the SQL file', () {
+      final row = PetMapper.toRow(sample());
+      expect(row.containsKey('age_in_months'), isTrue);
+      expect(row.containsKey('image_urls'), isTrue);
+      expect(row.containsKey('health_issues'), isTrue);
+      expect(row.containsKey('seller_id'), isTrue);
+      // The Dart camelCase names must never reach the database.
+      expect(row.containsKey('ageInMonths'), isFalse);
+      expect(row.containsKey('imageUrls'), isFalse);
+      expect(row.containsKey('ownerId'), isFalse);
+    });
+
+    test('an unknown or missing value falls back instead of throwing', () {
+      final back = PetMapper.fromRow({
+        'id': 'pet-2',
+        'name': 'Rocky',
+        'species': 'dragon',
+        'status': 'teleported',
+        'condition': 'pristine',
+        'gender': null,
+        'price': null,
+        'age_in_months': null,
+        'image_urls': null,
+        'tags': null,
+        'vaccinations': null,
+      });
+
+      expect(back.species, PetSpecies.other);
+      expect(back.status, PetStatus.available);
+      expect(back.condition, PetCondition.excellent);
+      expect(back.price, 0);
+      expect(back.imageUrls, isEmpty);
+      expect(back.vaccinations, isEmpty);
+      expect(back.createdAt, isNull);
+    });
+
+    test('a patch touches only the columns the app can edit', () {
+      final patch = PetMapper.toPatch(sample());
+      expect(patch.containsKey('status'), isTrue);
+      expect(patch.containsKey('price'), isTrue);
+      // seller_id must never be in a patch or a listing could be stolen.
+      expect(patch.containsKey('seller_id'), isFalse);
+      expect(patch.containsKey('views'), isFalse);
+    });
+  });
+
+  group('Pet listing without a backend', () {
+    test('createListing still works offline and flags the write unsynced', () async {
+      final service = PetService();
+      final pet = await service.createListing(
+        name: 'Milo',
+        species: PetSpecies.dog,
+        breed: 'Beagle',
+        ageInMonths: 24,
+        gender: 'Male',
+        price: 20000,
+        description: 'Calm.',
+        location: 'Pune, MH',
+        healthIssues: 'None known',
+        negotiable: false,
+      );
+
+      expect(pet.name, 'Milo');
+      expect(service.myListings.single.id, pet.id);
+      // Offline there is no server to confirm the write, but the local copy
+      // must still exist.
+      expect(service.lastWriteSynced, isTrue);
+      service.dispose();
+    });
+
+    test('the repository reports itself unavailable with no session', () {
+      expect(PetRepository.instance.isAvailable, isFalse);
+    });
+  });
+
+  group('Product row mapping', () {
+    ProductModel sample() => const ProductModel(
+      id: 'prod-1',
+      name: 'Premium Dog Food',
+      brand: 'PetHub',
+      category: ProductCategory.food,
+      price: 1200,
+      oldPrice: 1500,
+      imageUrl: 'https://cdn.test/food.jpg',
+      description: 'Grain free.',
+      highlights: ['High protein', 'No fillers'],
+      stock: 20,
+      soldCount: 5,
+      isFeatured: true,
+      isBestSeller: false,
+      freeShipping: true,
+      speciesTags: [PetSpecies.dog],
+      sellerId: 'u1',
+      shopName: 'Sam\'s Shop',
+      shopVerified: true,
+      rating: 4.8,
+      reviewCount: 12,
+    );
+
+    test('a model round-trips through a database row without losing fields',
+        () {
+      final row = ProductMapper.toRow(sample());
+      final back = ProductMapper.fromRow({
+        ...row,
+        'id': 'prod-1',
+        'created_at': '2026-01-02T03:04:05Z',
+      });
+
+      expect(back.id, 'prod-1');
+      expect(back.name, 'Premium Dog Food');
+      expect(back.brand, 'PetHub');
+      expect(back.category, ProductCategory.food);
+      expect(back.price, 1200);
+      expect(back.oldPrice, 1500);
+      expect(back.imageUrl, 'https://cdn.test/food.jpg');
+      expect(back.description, 'Grain free.');
+      expect(back.highlights, ['High protein', 'No fillers']);
+      expect(back.stock, 20);
+      expect(back.soldCount, 5);
+      expect(back.isFeatured, isTrue);
+      expect(back.isBestSeller, isFalse);
+      expect(back.freeShipping, isTrue);
+      expect(back.speciesTags, [PetSpecies.dog]);
+      expect(back.sellerId, 'u1');
+      expect(back.shopName, 'Sam\'s Shop');
+      expect(back.shopVerified, isTrue);
+      expect(back.rating, 4.8);
+      expect(back.reviewCount, 12);
+    });
+
+    test('column names are snake_case and match the SQL file', () {
+      final row = ProductMapper.toRow(sample());
+      expect(row.containsKey('seller_id'), isTrue);
+      expect(row.containsKey('image_url'), isTrue);
+      expect(row.containsKey('old_price'), isTrue);
+      expect(row.containsKey('sold_count'), isTrue);
+      expect(row.containsKey('species_tags'), isTrue);
+      // The Dart camelCase names must never reach the database.
+      expect(row.containsKey('sellerId'), isFalse);
+      expect(row.containsKey('imageUrl'), isFalse);
+      expect(row.containsKey('shopName'), isFalse);
+      expect(row.containsKey('oldPrice'), isFalse);
+      // id and created_at are owned by Postgres.
+      expect(row.containsKey('id'), isFalse);
+    });
+
+    test('an unknown or missing value falls back instead of throwing', () {
+      final back = ProductMapper.fromRow({
+        'id': 'prod-2',
+        'name': 'Toy',
+        'brand': null,
+        'category': 'gadget',
+        'price': null,
+        'old_price': null,
+        'image_url': null,
+        'highlights': null,
+        'stock': null,
+        'species_tags': null,
+        'seller_id': null,
+      });
+
+      expect(back.category, ProductCategory.accessories);
+      expect(back.price, 0);
+      expect(back.oldPrice, isNull);
+      expect(back.imageUrl, isEmpty);
+      expect(back.highlights, isEmpty);
+      expect(back.stock, 0);
+      expect(back.speciesTags, isEmpty);
+      expect(back.shopVerified, isFalse);
+    });
+
+    test('a patch touches only the columns the app can edit', () {
+      final patch = ProductMapper.toPatch(sample());
+      expect(patch.containsKey('price'), isTrue);
+      expect(patch.containsKey('stock'), isTrue);
+      // seller_id must never be in a patch or a listing could be stolen.
+      expect(patch.containsKey('seller_id'), isFalse);
+      expect(patch.containsKey('sold_count'), isFalse);
+    });
+  });
+
+  group('Product listing without a backend', () {
+    test('createProductListing still works offline and flags the write synced',
+        () async {
+      final service = StoreService();
+      final product = await service.createProductListing(
+        name: 'Chew Toy',
+        brand: 'PetHub',
+        category: ProductCategory.toys,
+        price: 300,
+      );
+
+      expect(product.name, 'Chew Toy');
+      expect(service.myShopProducts.single.id, product.id);
+      // A seller's own product stays out of the browse grid.
+      expect(service.results, isEmpty);
+      expect(service.lastWriteSynced, isTrue);
+      service.dispose();
+    });
+
+    test('the repository reports itself unavailable with no session', () {
+      expect(ProductRepository.instance.isAvailable, isFalse);
     });
   });
 

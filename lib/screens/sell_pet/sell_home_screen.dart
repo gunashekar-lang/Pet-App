@@ -19,7 +19,7 @@ class SellHomeScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Sell')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
         children: [
           Text(
             'What do you want to sell?',

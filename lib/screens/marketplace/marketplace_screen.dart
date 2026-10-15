@@ -3,15 +3,18 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/routes.dart';
-import '../../data/categories_data.dart';
 import '../../models/pet_model.dart';
+import '../../models/product_model.dart';
 import '../../services/pet_service.dart';
+import '../../services/store_service.dart';
 import '../../utils/constants.dart';
 import '../../utils/helpers.dart';
 import '../../widgets/common.dart';
 import '../../widgets/custom_button.dart';
 import '../../widgets/pet_card.dart';
+import '../../widgets/product_card.dart';
 import '../../widgets/section_header.dart';
+import '../store/store_screen.dart';
 
 /// Standalone marketplace route. The Buy tab uses [MarketplaceBrowser]
 /// directly, so this is kept as a deep-linkable target.
@@ -38,9 +41,15 @@ class MarketplaceBrowser extends StatefulWidget {
   State<MarketplaceBrowser> createState() => _MarketplaceBrowserState();
 }
 
+/// The Buy page can browse two catalogues: pets for adoption/sale and the
+/// physical pet store. The slide toggle at the top switches between them.
+enum BuyTab { pets, store }
+
 class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
   final _scrollController = ScrollController();
   final _searchController = TextEditingController();
+
+  BuyTab _tab = BuyTab.pets;
 
   @override
   void initState() {
@@ -57,36 +66,78 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
   }
 
   void _onSearchChanged() {
-    // PetService notifies listeners, so the results grid rebuilds on its own.
-    context.read<PetService>().setQuery(_searchController.text);
+    _applyQuery(_searchController.text);
+  }
+
+  /// Routes the typed text to whichever catalogue is currently on screen.
+  void _applyQuery(String value) {
+    if (_tab == BuyTab.pets) {
+      context.read<PetService>().setQuery(value);
+    } else {
+      context.read<StoreService>().setQuery(value);
+    }
+  }
+
+  void _setTab(BuyTab tab) {
+    if (_tab == tab) return;
+    setState(() => _tab = tab);
+    // Re-apply the current search text to the newly active catalogue so the
+    // results grid immediately reflects what is already typed.
+    _applyQuery(_searchController.text);
   }
 
   Future<void> _openFilters() async {
-    final service = context.read<PetService>();
-    final result = await showModalBottomSheet<PetFilter>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (_) => PetFilterSheet(initial: service.filter),
-    );
-    if (result != null) service.setFilter(result);
+    if (_tab == BuyTab.pets) {
+      final service = context.read<PetService>();
+      final result = await showModalBottomSheet<PetFilter>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        builder: (_) => PetFilterSheet(initial: service.filter),
+      );
+      if (result != null) service.setFilter(result);
+    } else {
+      await showModalBottomSheet<bool>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        builder: (_) => const StoreFilterSheet(),
+      );
+    }
   }
 
   Future<void> _openSort() async {
-    final service = context.read<PetService>();
-    final result = await showModalBottomSheet<PetSort>(
-      context: context,
-      builder: (_) => const SortSheet(),
-    );
-    if (result != null) service.setSort(result);
+    if (_tab == BuyTab.pets) {
+      final service = context.read<PetService>();
+      final result = await showModalBottomSheet<PetSort>(
+        context: context,
+        builder: (_) => const SortSheet(),
+      );
+      if (result != null) service.setSort(result);
+    } else {
+      final store = context.read<StoreService>();
+      final result = await showModalBottomSheet<StoreSort>(
+        context: context,
+        builder: (_) => const StoreSortSheet(),
+      );
+      if (result != null) store.setSort(result);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final service = context.watch<PetService>();
+    final pets = context.watch<PetService>();
+    final store = context.watch<StoreService>();
     final scheme = Theme.of(context).colorScheme;
-    final results = service.results;
-    final favorites = service.favoriteIds;
+
+    final isPets = _tab == BuyTab.pets;
+    // Resolve the active catalogue once so the header, result row and grid
+    // all agree without recomputing filters/sort more than necessary.
+    final List<PetModel> petResults = isPets ? pets.results : const [];
+    final List<ProductModel> storeResults = isPets ? const [] : store.results;
+    final count = isPets ? petResults.length : storeResults.length;
+    final filterCount = isPets ? pets.filter.activeCount : store.activeFilterCount;
+    final sortLabel = isPets ? pets.sort.label : store.sort.label;
 
     return Scaffold(
       body: SafeArea(
@@ -95,7 +146,7 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
           children: [
             if (widget.header != null) widget.header!,
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
               child: Row(
                 children: [
                   Expanded(
@@ -112,7 +163,9 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '${service.allPets.length} pets ready for a new home',
+                          isPets
+                              ? '${pets.allPets.length} pets ready for a new home'
+                              : '${store.allProducts.length} products in the store',
                           style: TextStyle(
                             fontSize: 12.5,
                             color: scheme.onSurface.withValues(alpha: 0.55),
@@ -124,6 +177,10 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
                 ],
               ),
             ),
+            Gap.h14,
+            // Slide toggle: Pets on the left, Store on the right.
+            _BuyTabToggle(current: _tab, onChanged: _setTab),
+            Gap.h12,
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: TextField(
@@ -131,7 +188,9 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
                 onSubmitted: (_) => FocusScope.of(context).unfocus(),
                 textInputAction: TextInputAction.search,
                 decoration: InputDecoration(
-                  hintText: 'Search by breed, name or location',
+                  hintText: isPets
+                      ? 'Search by breed, name or location'
+                      : 'Search food, toys, grooming…',
                   prefixIcon: const Icon(Icons.search_rounded, size: 21),
                   suffixIcon: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -144,8 +203,8 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
                       IconButton(
                         tooltip: 'Filters',
                         icon: Badge(
-                          isLabelVisible: service.filter.activeCount > 0,
-                          label: Text('${service.filter.activeCount}'),
+                          isLabelVisible: filterCount > 0,
+                          label: Text('$filterCount'),
                           child: const Icon(Icons.tune_rounded, size: 20),
                         ),
                         onPressed: _openFilters,
@@ -156,17 +215,12 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
               ),
             ),
             Gap.h12,
-            _CategoryTabs(
-              selectedId: service.selectedCategoryId,
-              onSelect: service.setCategory,
-            ),
-            Gap.h12,
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
                 children: [
                   Text(
-                    Helpers.plural(results.length, 'result'),
+                    Helpers.plural(count, 'result'),
                     style: TextStyle(
                       fontSize: 12.5,
                       fontWeight: FontWeight.w600,
@@ -174,15 +228,15 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
                     ),
                   ),
                   Gap.w8,
-                  if (service.filter.activeCount > 0) ...[
+                  if (filterCount > 0) ...[
                     StatusPill(
-                      label: '${service.filter.activeCount} filters',
+                      label: '$filterCount filters',
                       icon: Icons.tune_rounded,
                       dense: true,
                     ),
                     Gap.w6,
                     GestureDetector(
-                      onTap: service.clearFilter,
+                      onTap: isPets ? pets.clearFilter : store.clearFilters,
                       child: Text(
                         'Clear',
                         style: TextStyle(
@@ -198,7 +252,7 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
                     onPressed: _openSort,
                     icon: const Icon(Icons.swap_vert_rounded, size: 18),
                     label: Text(
-                      service.sort.label,
+                      sortLabel,
                       style: const TextStyle(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w700,
@@ -217,47 +271,16 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
             Expanded(
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 220),
-                child: results.isEmpty
-                    ? _NoResults(
-                        key: const ValueKey('empty'),
-                        hasQuery: _searchController.text.isNotEmpty,
-                        onClear: () {
-                          _searchController.clear();
-                          service.clearFilter();
-                          service.setCategory('all');
-                        },
+                child: isPets
+                    ? _petResultsGrid(
+                        pets,
+                        petResults,
+                        _searchController.text.isNotEmpty,
                       )
-                    : GridView.builder(
-                        key: const ValueKey('grid'),
-                        controller: _scrollController,
-                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 100),
-                        gridDelegate:
-                            const SliverGridDelegateWithMaxCrossAxisExtent(
-                              maxCrossAxisExtent: 230,
-                              mainAxisExtent: 292,
-                              crossAxisSpacing: 12,
-                              mainAxisSpacing: 14,
-                            ),
-                        itemCount: results.length,
-                        itemBuilder: (context, i) {
-                          final pet = results[i];
-                          return PetCard(
-                            pet: pet,
-                            isFavorite: favorites.contains(pet.id),
-                            onFavoriteToggle: () {
-                              HapticFeedback.lightImpact();
-                              service.toggleFavorite(pet.id);
-                            },
-                            onTap: () {
-                              service.incrementViews(pet.id);
-                              Nav.push(
-                                context,
-                                AppRoutes.petDetails,
-                                PetDetailsArgs(pet.id),
-                              );
-                            },
-                          );
-                        },
+                    : _storeResultsGrid(
+                        store,
+                        storeResults,
+                        _searchController.text.isNotEmpty,
                       ),
               ),
             ),
@@ -266,83 +289,221 @@ class _MarketplaceBrowserState extends State<MarketplaceBrowser> {
       ),
     );
   }
-}
 
-class _CategoryTabs extends StatelessWidget {
-  const _CategoryTabs({required this.selectedId, required this.onSelect});
-
-  final String selectedId;
-  final ValueChanged<String> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 36,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        children: [
-          _Tab(
-            label: 'All pets',
-            selected: selectedId == 'all',
-            onTap: () => onSelect('all'),
-          ),
-          for (final category in CategoriesData.all) ...[
-            Gap.w8,
-            _Tab(
-              label: category.name,
-              selected: selectedId == category.id,
-              color: category.color,
-              onTap: () => onSelect(category.id),
-            ),
-          ],
-        ],
+  Widget _petResultsGrid(
+    PetService pets,
+    List<PetModel> results,
+    bool hasQuery,
+  ) {
+    if (results.isEmpty) {
+      return _NoResults(
+        key: const ValueKey('empty-pets'),
+        title: 'No pets found',
+        hasQuery: hasQuery,
+        onClear: () {
+          _searchController.clear();
+          pets.clearFilter();
+          pets.setCategory('all');
+        },
+      );
+    }
+    return GridView.builder(
+      key: const ValueKey('pet-grid'),
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 100),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 230,
+        mainAxisExtent: 292,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 14,
       ),
+      itemCount: results.length,
+      itemBuilder: (context, i) {
+        final pet = results[i];
+        return PetCard(
+          pet: pet,
+          isFavorite: pets.favoriteIds.contains(pet.id),
+          onFavoriteToggle: () {
+            HapticFeedback.lightImpact();
+            pets.toggleFavorite(pet.id);
+          },
+          onTap: () {
+            pets.incrementViews(pet.id);
+            Nav.push(context, AppRoutes.petDetails, PetDetailsArgs(pet.id));
+          },
+        );
+      },
     );
+  }
+
+  Widget _storeResultsGrid(
+    StoreService store,
+    List<ProductModel> results,
+    bool hasQuery,
+  ) {
+    if (results.isEmpty) {
+      return _NoResults(
+        key: const ValueKey('empty-store'),
+        title: 'No products found',
+        hasQuery: hasQuery,
+        onClear: () {
+          _searchController.clear();
+          store.clearFilters();
+        },
+      );
+    }
+    return GridView.builder(
+      key: const ValueKey('store-grid'),
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 100),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 230,
+        mainAxisExtent: 292,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 14,
+      ),
+      itemCount: results.length,
+      itemBuilder: (context, i) {
+        final product = results[i];
+        return ProductCard(
+          product: product,
+          isWishlisted: store.isInWishlist(product.id),
+          onToggleWishlist: () => store.toggleWishlist(product.id),
+          onAddToCart: () => _addToCart(store, product),
+          onTap: () => Nav.push(
+            context,
+            AppRoutes.productDetails,
+            ProductDetailsArgs(product.id),
+          ),
+        );
+      },
+    );
+  }
+
+  void _addToCart(StoreService store, ProductModel product) {
+    store.addToCart(product);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('${product.name} added to cart'),
+          duration: const Duration(seconds: 2),
+          action: SnackBarAction(
+            label: 'View cart',
+            onPressed: () => Nav.push(context, AppRoutes.cart),
+          ),
+        ),
+      );
   }
 }
 
-class _Tab extends StatelessWidget {
-  const _Tab({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.color,
-  });
+/// Sliding segmented control that switches the Buy page between the pet
+/// listings and the pet store. The pill indicator animates between the two
+/// halves.
+class _BuyTabToggle extends StatelessWidget {
+  const _BuyTabToggle({required this.current, required this.onChanged});
 
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final Color? color;
+  final BuyTab current;
+  final ValueChanged<BuyTab> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final accent = color ?? scheme.primary;
 
-    return Material(
-      color: selected ? accent : scheme.surface,
-      borderRadius: BorderRadius.circular(999),
-      clipBehavior: Clip.antiAlias,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        height: 46,
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(AppConstants.radiusLg),
+          border: Border.all(color: scheme.outline),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final segmentWidth = constraints.maxWidth / 2;
+            return Stack(
+              children: [
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.easeOutCubic,
+                  left: current == BuyTab.pets ? 0 : segmentWidth,
+                  top: 0,
+                  width: segmentWidth,
+                  height: constraints.maxHeight,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: scheme.primary,
+                      borderRadius: BorderRadius.circular(AppConstants.radiusLg),
+                      boxShadow: [
+                        BoxShadow(
+                          color: scheme.primary.withValues(alpha: 0.35),
+                          blurRadius: 10,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    _segment(
+                      scheme,
+                      tab: BuyTab.pets,
+                      icon: Icons.pets_rounded,
+                      label: 'Pets',
+                    ),
+                    _segment(
+                      scheme,
+                      tab: BuyTab.store,
+                      icon: Icons.storefront_rounded,
+                      label: 'Store',
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _segment(
+    ColorScheme scheme, {
+    required BuyTab tab,
+    required IconData icon,
+    required String label,
+  }) {
+    final selected = current == tab;
+    final muted = scheme.onSurface.withValues(alpha: 0.65);
+    return Expanded(
       child: InkWell(
-        onTap: () {
-          HapticFeedback.selectionClick();
-          onTap();
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 15),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: selected ? accent : scheme.outline),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: selected ? Colors.white : scheme.onSurface,
-            ),
+        borderRadius: BorderRadius.circular(AppConstants.radiusLg),
+        onTap: () => onChanged(tab),
+        child: Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 17,
+                color: selected ? Colors.white : muted,
+              ),
+              const SizedBox(width: 7),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.2,
+                  color: selected
+                      ? Colors.white
+                      : scheme.onSurface.withValues(alpha: 0.8),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -351,8 +512,14 @@ class _Tab extends StatelessWidget {
 }
 
 class _NoResults extends StatelessWidget {
-  const _NoResults({super.key, required this.hasQuery, required this.onClear});
+  const _NoResults({
+    super.key,
+    required this.title,
+    required this.hasQuery,
+    required this.onClear,
+  });
 
+  final String title;
   final bool hasQuery;
   final VoidCallback onClear;
 
@@ -360,9 +527,9 @@ class _NoResults extends StatelessWidget {
   Widget build(BuildContext context) {
     return EmptyState(
       icon: Icons.search_off_rounded,
-      title: 'No pets found',
+      title: title,
       message: hasQuery
-          ? 'Try a different breed, name or location, or relax your filters.'
+          ? 'Try a different search, or relax your filters.'
           : 'There are no listings matching these filters right now.',
       actionLabel: 'Clear all filters',
       onAction: onClear,

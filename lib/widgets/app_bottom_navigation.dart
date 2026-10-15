@@ -44,30 +44,60 @@ class AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      extendBody: true,
-      body: IndexedStack(
-        index: _index,
-        children: [
-          _TabNavigator(
-            navigatorKey: _navKeys[0],
-            initialRoute: AppRoutes.home,
-            builder: (_) => const HomeScreen(),
-          ),
-          _TabNavigator(
-            navigatorKey: _navKeys[1],
-            initialRoute: AppRoutes.sellHome,
-            builder: (_) => const SellHomeScreen(),
-          ),
-          _TabNavigator(
-            navigatorKey: _navKeys[2],
-            initialRoute: AppRoutes.messages,
-            builder: (_) => const ChatListScreen(),
-          ),
-        ],
+    return PopScope(
+      // Back must never pop the root navigator: doing so reveals the login
+      // screen sitting underneath /shell and never moves between the screens
+      // stacked inside a tab. Every system back gesture is instead routed to
+      // the active tab by _handleBack below.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _handleBack();
+      },
+      child: Scaffold(
+        // The bar is opaque, so the body must stop at its top edge. Extending the
+        // body would push every pushed route's own bottom bar (checkout, chat
+        // composer, FABs) underneath the shell bar instead of above it.
+        body: IndexedStack(
+          index: _index,
+          children: [
+            _TabNavigator(
+              navigatorKey: _navKeys[0],
+              initialRoute: AppRoutes.home,
+              builder: (_) => const HomeScreen(),
+            ),
+            _TabNavigator(
+              navigatorKey: _navKeys[1],
+              initialRoute: AppRoutes.sellHome,
+              builder: (_) => const SellHomeScreen(),
+            ),
+            _TabNavigator(
+              navigatorKey: _navKeys[2],
+              initialRoute: AppRoutes.messages,
+              builder: (_) => const ChatListScreen(),
+            ),
+          ],
+        ),
+        bottomNavigationBar: const _ShellBottomBar(),
       ),
-      bottomNavigationBar: const _ShellBottomBar(),
     );
+  }
+
+  /// Routes a system back gesture: pop within the active tab first so back
+  /// returns to the previous screen, otherwise fall back to the Buy tab, and
+  /// only leave the app from the Buy tab's root screen.
+  void _handleBack() {
+    final navigator = _navKeys[_index].currentState;
+    if (navigator != null && navigator.canPop()) {
+      navigator.pop();
+      return;
+    }
+    if (_index != 0) {
+      goToTab(0);
+      return;
+    }
+    // Nowhere left to navigate inside the app — hand back to the OS.
+    SystemNavigator.pop();
   }
 }
 

@@ -80,7 +80,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     if (!mounted || !ok) return;
     HapticFeedback.mediumImpact();
-    await Nav.replace(context, AppRoutes.shell);
+    await Nav.resetTo(context, AppRoutes.shell);
   }
 
   @override

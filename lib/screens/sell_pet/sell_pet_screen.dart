@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+
 import 'package:provider/provider.dart';
 
 import '../../app/routes.dart';
 import '../../models/pet_model.dart';
+import '../../services/auth_service.dart';
+import '../../services/image_storage_service.dart';
 import '../../services/notification_service.dart';
+import '../../services/web_camera.dart';
 import '../../services/pet_service.dart';
 import '../../utils/constants.dart';
 import '../../utils/validators.dart';
@@ -29,18 +34,25 @@ class _SellPetScreenState extends State<SellPetScreen> {
   final _locationController = TextEditingController();
   final _priceController = TextEditingController();
   final _healthIssuesController = TextEditingController();
+  final _ageController = TextEditingController(text: '18');
   final _imagePaths = <String>[];
   final _vaccinations = <VaccinationRecord>[];
 
   PetSpecies _species = PetSpecies.dog;
-  PetAge _age = PetAge.young;
+  int _ageInMonths = 18;
   String _gender = 'Male';
   bool _negotiable = false;
+
+  /// Age bracket used for search tags, derived from the entered month count.
+  PetAge get _age => PetAge.values.firstWhere(
+    (bracket) => _ageInMonths <= bracket.monthsApprox + 6,
+    orElse: () => PetAge.senior,
+  );
 
   @override
   void initState() {
     super.initState();
-    _locationController.text = 'Your area';
+    _locationController.text = '';
   }
 
   @override
@@ -51,17 +63,47 @@ class _SellPetScreenState extends State<SellPetScreen> {
     _locationController.dispose();
     _priceController.dispose();
     _healthIssuesController.dispose();
+    _ageController.dispose();
     super.dispose();
   }
 
   Future<void> _addPhoto(ImageSource source) async {
-    final picked = await ImagePicker().pickImage(
-      source: source,
-      maxWidth: 1600,
-      imageQuality: 85,
-    );
-    if (picked == null || !mounted) return;
-    setState(() => _imagePaths.add(picked.path));
+    try {
+      String? path;
+      if (source == ImageSource.camera) {
+        // On web the browser camera (getUserMedia) opens an in-app capture
+        // sheet; fall back to image_picker when no camera is available.
+        final bytes = await captureWebCameraImage(context: context);
+        path = bytes != null ? bytesToJpegDataUri(bytes) : null;
+        if (path == null) {
+          final picked = await ImagePicker().pickImage(
+            source: source,
+            maxWidth: 1600,
+            imageQuality: 85,
+          );
+          path = picked?.path;
+        }
+      } else {
+        final picked = await ImagePicker().pickImage(
+          source: source,
+          maxWidth: 1600,
+          imageQuality: 85,
+        );
+        path = picked?.path;
+      }
+      if (path == null || !mounted) return;
+      setState(() => _imagePaths.add(path!));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Could not open the camera or gallery on this '
+                'device.'),
+          ),
+        );
+    }
   }
 
   Future<void> _choosePhotoSource() async {
@@ -121,13 +163,23 @@ class _SellPetScreenState extends State<SellPetScreen> {
     }
 
     final service = context.read<PetService>();
+    final sellerId = context.read<AuthService>().user?.id ?? '';
+
+    // Photos must be uploaded before the listing is created: a stored cache
+    // path would render for the seller and nobody else.
+    final imageUrls = await ImageStorageService.instance.uploadPetImages(
+      localPaths: _imagePaths,
+      userId: sellerId,
+    );
+    if (!mounted) return;
+
     final pet = await service.createListing(
       name: _nameController.text.trim(),
       species: _species,
       breed: _breedController.text.trim().isEmpty
           ? 'Mixed'
           : _breedController.text.trim(),
-      ageInMonths: _age.monthsApprox,
+      ageInMonths: _ageInMonths,
       gender: _gender,
       price: price,
       description: _descriptionController.text.trim(),
@@ -136,7 +188,7 @@ class _SellPetScreenState extends State<SellPetScreen> {
           ? 'None known'
           : _healthIssuesController.text.trim(),
       negotiable: _negotiable,
-      imagePaths: _imagePaths,
+      imagePaths: imageUrls,
       vaccinations: _vaccinations,
       tags: [_species.label, _age.label],
     );
@@ -146,12 +198,48 @@ class _SellPetScreenState extends State<SellPetScreen> {
       petName: pet.name,
       petId: pet.id,
     );
-    // Land on My Listings so the seller immediately sees what they published.
-    await Nav.push(context, AppRoutes.myListings);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
+
+    // Do not claim success when the insert was rejected: say what actually
+    // happened, otherwise a broken backend looks like a working one.
+    final synced = service.lastWriteSynced;
+    _resetForm();
+
+    // The messenger sits above the navigator, so the confirmation survives the
+    // route change and stays readable on the listings page we land on.
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('${pet.name} is now listed')));
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            synced
+                ? '${pet.name} is now listed in your listings.'
+                : '${pet.name} could not be saved to the server. It will be '
+                      'lost when you close the app.',
+          ),
+          duration: const Duration(seconds: 8),
+        ),
+      );
+    if (mounted) Nav.replace(context, AppRoutes.myListings);
+  }
+
+  /// Returns the form to its initial state after a successful publish.
+  void _resetForm() {
+    _formKey.currentState?.reset();
+    _nameController.clear();
+    _breedController.clear();
+    _descriptionController.clear();
+    _priceController.clear();
+    _healthIssuesController.clear();
+    setState(() {
+      _imagePaths.clear();
+      _vaccinations.clear();
+      _species = PetSpecies.dog;
+      _ageInMonths = 18;
+      _ageController.text = '18';
+      _gender = 'Male';
+      _negotiable = false;
+    });
   }
 
   @override
@@ -254,16 +342,30 @@ class _SellPetScreenState extends State<SellPetScreen> {
               ),
             ),
             Gap.h12,
-            DropdownButtonFormField<PetAge>(
-              initialValue: _age,
-              decoration: const InputDecoration(labelText: 'Age'),
-              items: [
-                for (final age in PetAge.values)
-                  DropdownMenuItem(value: age, child: Text(age.label)),
+            TextFormField(
+              controller: _ageController,
+              keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(3),
               ],
+              decoration: const InputDecoration(
+                labelText: 'Age',
+                hintText: 'in months',
+                suffixText: 'months',
+              ),
+              validator: (value) {
+                final months = int.tryParse((value ?? '').trim());
+                if (months == null) return 'Enter the age in months';
+                if (months < 1) return 'Age must be at least 1 month';
+                if (months > 360) return 'Enter an age under 360 months';
+                return null;
+              },
               onChanged: (value) {
-                if (value == null) return;
-                setState(() => _age = value);
+                final months = int.tryParse(value.trim());
+                if (months != null && months > 0) {
+                  setState(() => _ageInMonths = months);
+                }
               },
             ),
             Gap.h12,
@@ -305,7 +407,7 @@ class _SellPetScreenState extends State<SellPetScreen> {
                 decimal: true,
               ),
               decoration: const InputDecoration(
-                labelText: 'Asking price',
+                labelText: 'Your Price',
                 prefixText: '₹ ',
               ),
               validator: Validators.price,
@@ -354,7 +456,7 @@ class _SellPetScreenState extends State<SellPetScreen> {
               textCapitalization: TextCapitalization.sentences,
               decoration: const InputDecoration(
                 labelText: 'Health issues',
-                hintText: 'None known',
+             
                 alignLabelWithHint: true,
                 helperText:
                     'List any known conditions, allergies or medication',

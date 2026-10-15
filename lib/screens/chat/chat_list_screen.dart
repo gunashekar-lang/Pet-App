@@ -11,8 +11,24 @@ import '../../widgets/common.dart';
 import '../../widgets/section_header.dart';
 
 /// The Chat tab: every buyer ↔ seller conversation the user is part of.
-class ChatListScreen extends StatelessWidget {
+class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
+
+  @override
+  State<ChatListScreen> createState() => _ChatListScreenState();
+}
+
+class _ChatListScreenState extends State<ChatListScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Open the live inbox on first visit as well as at splash, so a login that
+    // happens mid-session still picks up conversations and Realtime.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<MessagingService>().bootstrap();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -68,7 +84,7 @@ class ChatListScreen extends StatelessWidget {
               child: messaging.isEmpty
                   ? _EmptyInbox()
                   : ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 110),
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
                       itemCount: messaging.threads.length,
                       separatorBuilder: (_, _) => Gap.h10,
                       itemBuilder: (context, index) => _ThreadTile(
