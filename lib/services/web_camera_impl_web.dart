@@ -1,9 +1,10 @@
 import 'dart:convert';
-import 'dart:html' as html;
+import 'dart:js_interop';
 import 'dart:typed_data';
 import 'dart:ui_web' as ui_web;
 
 import 'package:flutter/material.dart';
+import 'package:web/web.dart' as web;
 
 /// Opens the browser camera (getUserMedia) in an in-app capture sheet and
 /// returns the captured frame as JPEG bytes.
@@ -14,16 +15,16 @@ import 'package:flutter/material.dart';
 Future<Uint8List?> captureWebCameraImage({
   required BuildContext context,
 }) async {
-  final html.MediaStream? stream = await _openStream();
+  final web.MediaStream? stream = await _openStream();
   if (stream == null) return null;
   if (!context.mounted) {
-    stream.getTracks().forEach((track) => track.stop());
+    _stopTracks(stream);
     return null;
   }
 
   Uint8List? result;
   try {
-    final video = html.VideoElement()
+    final video = web.HTMLVideoElement()
       ..srcObject = stream
       ..autoplay = true
       ..muted = true
@@ -57,34 +58,41 @@ Future<Uint8List?> captureWebCameraImage({
   } catch (_) {
     return null;
   } finally {
-    stream.getTracks().forEach((track) => track.stop());
+    _stopTracks(stream);
   }
 }
 
-Future<html.MediaStream?> _openStream() async {
+Future<web.MediaStream?> _openStream() async {
   try {
-    final devices = html.window.navigator.mediaDevices;
-    if (devices == null) return null;
-    return await devices.getUserMedia({
-      'audio': false,
-      'video': {'facingMode': 'environment'},
-    });
+    final constraints = web.MediaStreamConstraints(
+      audio: false.toJS,
+      video: <String, Object>{'facingMode': 'environment'}.jsify()!,
+    );
+    return await web.window.navigator.mediaDevices
+        .getUserMedia(constraints)
+        .toDart;
   } catch (_) {
     return null;
   }
 }
 
+void _stopTracks(web.MediaStream stream) {
+  for (final track in stream.getTracks().toDart) {
+    track.stop();
+  }
+}
+
 /// Draws the current video frame onto a canvas and exports it as JPEG bytes.
-Uint8List? _snapshot(html.VideoElement video) {
+Uint8List? _snapshot(web.HTMLVideoElement video) {
   if (video.videoWidth == 0 || video.videoHeight == 0) return null;
-  final canvas = html.CanvasElement(
-    width: video.videoWidth,
-    height: video.videoHeight,
-  );
-  final context = canvas.context2D
-    ..fillStyle = '#000000'
-    ..fillRect(0, 0, canvas.width!, canvas.height!);
-  context.drawImage(video, 0, 0);
+  final canvas = web.HTMLCanvasElement()
+    ..width = video.videoWidth
+    ..height = video.videoHeight;
+
+  canvas.context2D
+    ..fillStyle = '#000000'.toJS
+    ..fillRect(0, 0, canvas.width, canvas.height)
+    ..drawImage(video, 0, 0);
 
   final dataUrl = canvas.toDataUrl('image/jpeg', 0.85);
   if (dataUrl.isEmpty) return null;
